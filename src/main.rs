@@ -14,6 +14,8 @@
 
 extern crate slack_hook;
 extern crate github_rs;
+// For status codes returned by github rs
+extern crate hyper;
 extern crate serde;
 extern crate serde_json;
 extern crate serde_yaml;
@@ -25,6 +27,7 @@ use errors::*;
 use std::fs::File;
 use std::io::Read;
 use github_rs::client::Github;
+use hyper::StatusCode;
 use slack_hook::{Slack, SlackText, SlackTextContent, PayloadBuilder, SlackLink};
 use slack_hook::SlackTextContent::{Text, Link};
 use std::vec::Vec;
@@ -49,6 +52,11 @@ mod errors {
 }
 
 #[derive(Serialize, Deserialize)]
+struct GithubError {
+    message: String,
+}
+
+#[derive(Serialize, Deserialize)]
 struct PR {
     number: usize,
     title: String,
@@ -62,10 +70,9 @@ fn add_prs(repo: &str, prs: Vec<PR>) -> Option<Vec<SlackTextContent>> {
     let mut message = vec![Text(SlackText::new(format!("{}:", repo)))];
     for pr in prs {
         message.push(Text(SlackText::new("\n\t- ")));
-        message.push(Link(SlackLink::new(
-            &pr.html_url,
-            &(format!("#{}", pr.number)),
-        )));
+        message.push(Link(
+            SlackLink::new(&pr.html_url, &(format!("#{}", pr.number))),
+        ));
         message.push(Text(SlackText::new(format!(": {}", pr.title))));
     }
     Some(message)
@@ -112,9 +119,13 @@ fn run() -> Result<()> {
     };
     let client = Github::new(config.access_token)?;
     let slack = Slack::new(config.webhook_url.as_str())?;
-    slack.send(&PayloadBuilder::new()
-        .text("There are open PRs in these repos:")
-        .build()?)?;
+    slack
+        .send(&PayloadBuilder::new()
+            .text("There are open PRs in these repos:")
+            .build()?)
+        .chain_err(
+            || "Failed to send Slack message; is your webhook_url valid?",
+        )?;
 
     for repo in config.repos {
         let prs = client
@@ -125,7 +136,7 @@ fn run() -> Result<()> {
             .pulls()
             .execute();
         match prs {
-            Ok((_, _, Some(prs))) => {
+            Ok((_, StatusCode::Ok, Some(prs))) => {
                 let ds_pr: Vec<PR> = serde_json::from_value(prs)?;
                 match add_prs(&repo.repo, ds_pr) {
                     Some(message) => {
@@ -135,6 +146,10 @@ fn run() -> Result<()> {
                     }
                     None => {}
                 }
+            }
+            Ok((_, _, Some(prs))) => {
+                let ds_error: GithubError = serde_json::from_value(prs)?;
+                eprintln!("Bad status code from github. Error: {}", ds_error.message);
             }
             Ok((_, _, None)) => eprintln!("Invalid response from github"),
             Err(e) => eprintln!("Failed to get PRs for {}: {}", repo.repo, e),

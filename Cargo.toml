@@ -6,6 +6,7 @@ authors = ["Alexander Pavel <alex.pavel@coreos.com>"]
 [dependencies]
 slack-hook = "*"
 github-rs = "*"
+hyper = "*"
 serde = "*"
 serde_json = "*"
 serde_yaml = "*"
